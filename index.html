@@ -61,6 +61,9 @@
             <div style="background:white; padding:15px; border-radius:12px; display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                 <h3 id="currentClassName" style="margin:0"></h3>
                 <div style="display:flex; gap:10px;">
+		    <button id="btnToggleMode" class="btn" style="background:#f39c12; color:white" onclick="toggleMode()">
+        	    	<i class="fas fa-clipboard-check"></i> 切换到考勤
+   		   </button>
                     <button class="btn btn-primary" onclick="batchImport()"><i class="fas fa-file-import"></i> 批量导入名单</button>
                     <button class="btn" style="border:1px solid #ddd" onclick="exportScoresXLSX()">导出 Excel 成绩</button>
                 </div>
@@ -75,66 +78,41 @@
     const SUPABASE_KEY = 'sb_publishable_-6EG_xq1e50k75uGPc3mhA_dfQ8K75W';
     // ==========================================
 
-    // 初始化 Supabase
     const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
     let db = {};
     let currentUser = null;
     let currentClass = "";
-    // 预设班级名称
+    let isAttendanceMode = false; // 新增：是否处于考勤模式
     const CLASS_NAMES = ["骨伤2班", "治疗1班", "社体1班", "体能1班", "体教8班", "民传1班", "运训2班"];
 
-    // 登录功能
     async function handleLogin() {
         const email = document.getElementById('email').value;
         const password = document.getElementById('password').value;
-        const btn = document.querySelector('#view-login .btn');
-        btn.innerText = "正在连接云端服务器...";
-        
-        try {
-            const { data, error } = await sb.auth.signInWithPassword({ email, password });
-            if (error) {
-                alert("登录失败，请检查账号密码: " + error.message);
-                btn.innerText = "登录系统";
-            } else {
-                currentUser = data.user;
-                initApp();
-            }
-        } catch (err) {
-            alert("网络连接异常，请重试！");
-            btn.innerText = "登录系统";
-        }
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) alert("登录失败: " + error.message);
+        else { currentUser = data.user; initApp(); }
     }
 
-    // 登出功能
-    async function handleLogout() { 
-        await sb.auth.signOut(); 
-        location.reload(); 
-    }
+    async function handleLogout() { await sb.auth.signOut(); location.reload(); }
 
-    // 初始化应用数据
     async function initApp() {
         document.getElementById('view-login').classList.add('hidden');
         document.getElementById('view-app').classList.remove('hidden');
-        
         const { data } = await sb.from('classroom_data').select('data').eq('id', currentUser.id).single();
-        if (data) {
-            db = data.data;
-        } else {
-            CLASS_NAMES.forEach(n => db[n] = { students: [] });
+        if (data) db = data.data;
+        else {
+            CLASS_NAMES.forEach(n => db[n] = { students: [], attendance: {} });
             await saveToCloud();
         }
         router.go('view-home');
     }
 
-    // 保存数据到云端
     async function saveToCloud() {
         document.getElementById('sync-status').innerHTML = '<i class="fas fa-spinner fa-spin"></i> 同步中...';
         await sb.from('classroom_data').upsert({ id: currentUser.id, data: db, updated_at: new Date() });
         document.getElementById('sync-status').innerHTML = '<i class="fas fa-check"></i> 云端已同步';
     }
 
-    // 页面路由控制
     const router = {
         stack: [],
         go(viewId) {
@@ -148,7 +126,6 @@
         back() { this.stack.pop(); this.go(this.stack.pop()); }
     };
 
-    // 渲染首页班级列表
     function renderHome() {
         const grid = document.getElementById('homeClassGrid');
         grid.innerHTML = CLASS_NAMES.map(name => `
@@ -159,61 +136,104 @@
             </div>`).join('');
     }
 
-    // 渲染班级学生列表
+    // 核心修改：渲染学生列表（区分评分模式和考勤模式）
     function renderScores() {
-        document.getElementById('currentClassName').innerText = currentClass;
+        document.getElementById('currentClassName').innerText = currentClass + (isAttendanceMode ? " [考勤模式]" : " [评分模式]");
         const students = db[currentClass].students || [];
-        document.getElementById('scoreGrid').innerHTML = students.map(s => `
-            <div class="card">
+        const today = new Date().toLocaleDateString();
+        
+        // 确保考勤数据结构存在
+        if(!db[currentClass].attendance) db[currentClass].attendance = {};
+        if(!db[currentClass].attendance[today]) db[currentClass].attendance[today] = [];
+
+        const attendanceList = db[currentClass].attendance[today];
+
+        document.getElementById('scoreGrid').innerHTML = students.map(s => {
+            const isPresent = attendanceList.includes(s.id);
+            const cardStyle = isAttendanceMode && isPresent ? 'border: 2px solid var(--color-present); background: #f0fff4;' : '';
+            
+            return `
+            <div class="card" style="${cardStyle} transition: 0.3s;" onclick="${isAttendanceMode ? `toggleAttendance('${s.id}')` : ''}">
                 <div class="stu-no">#${s.no}</div>
+                ${isAttendanceMode && isPresent ? '<div style="position:absolute; top:5px; right:5px; color:var(--color-present)"><i class="fas fa-check-circle"></i></div>' : ''}
                 <div class="avatar" style="background:hsl(${(s.no*137)%360},60%,70%)">${s.name[0]}</div>
                 <div><b>${s.name}</b></div>
-                <div style="font-size:1.5rem; margin:10px 0; font-weight:bold; color:var(--primary)">${s.score}</div>
-                <div style="display:flex; justify-content:center; gap:10px">
-                    <button class="btn" style="background:var(--color-absent); color:white; padding:5px 12px" onclick="changeScore('${s.id}',-1)">-1</button>
-                    <button class="btn" style="background:var(--color-present); color:white; padding:5px 12px" onclick="changeScore('${s.id}',1)">+1</button>
-                </div>
-            </div>`).join('');
+                
+                ${!isAttendanceMode ? `
+                    <div style="font-size:1.5rem; margin:10px 0; font-weight:bold; color:var(--primary)">${s.score}</div>
+                    <div style="display:flex; justify-content:center; gap:10px">
+                        <button class="btn" style="background:var(--color-absent); color:white; padding:5px 12px" onclick="event.stopPropagation(); changeScore('${s.id}',-1)">-1</button>
+                        <button class="btn" style="background:var(--color-present); color:white; padding:5px 12px" onclick="event.stopPropagation(); changeScore('${s.id}',1)">+1</button>
+                    </div>
+                ` : `
+                    <div style="margin-top:10px; font-size:0.9rem; color:${isPresent ? 'var(--color-present)' : '#999'}">
+                        ${isPresent ? '<b>已签到</b>' : '未签到'}
+                    </div>
+                `}
+            </div>`;
+        }).join('');
+    }
+
+    // 切换考勤状态
+    function toggleAttendance(sid) {
+        const today = new Date().toLocaleDateString();
+        const list = db[currentClass].attendance[today];
+        const index = list.indexOf(sid);
+        
+        if (index > -1) {
+            list.splice(index, 1); // 如果已在名单，则取消签到
+        } else {
+            list.push(sid); // 否则加入签到名单
+        }
+        renderScores();
+        saveToCloud();
+    }
+
+    // 切换模式按钮
+    function toggleMode() {
+        isAttendanceMode = !isAttendanceMode;
+        const btn = document.getElementById('btnToggleMode');
+        btn.innerHTML = isAttendanceMode ? '<i class="fas fa-star"></i> 切换到评分' : '<i class="fas fa-clipboard-check"></i> 切换到考勤';
+        renderScores();
     }
 
     // 修改分数
     function changeScore(sid, delta) {
         const s = db[currentClass].students.find(x => x.id === sid);
         if(s) {
-            s.score = Math.max(0, s.score + delta); // 分数不低于0
+            s.score = Math.max(0, s.score + delta);
             renderScores();
             saveToCloud();
         }
     }
 
-    // 批量导入名单功能
     function batchImport() {
-        const raw = prompt("请从 Excel 复制并粘贴名单（格式：学号 姓名，中间有空格，每行一个）：");
+        const raw = prompt("格式：学号 姓名，每行一个：");
         if(!raw) return;
         const lines = raw.trim().split('\n');
         const newList = lines.map((line, index) => {
             const parts = line.trim().split(/\s+/);
-            return { 
-                id: parts[0] || Date.now()+index, 
-                name: parts[1] || parts[0] || "未知", 
-                no: index+1, 
-                score: 0 
-            };
+            return { id: parts[0] || Date.now()+index, name: parts[1] || parts[0], no: index+1, score: 0 };
         });
-        if(confirm(`成功识别到 ${newList.length} 名学生，是否覆盖当前班级名单？\n注意：这将清空该班级现有的成绩！`)) {
+        if(confirm(`识别到 ${newList.length} 人，是否覆盖？`)) {
             db[currentClass].students = newList;
             renderScores();
             saveToCloud();
         }
     }
 
-    // 导出 Excel 功能
     function exportScoresXLSX() {
-        const data = db[currentClass].students.map(s => ({ "序号": s.no, "学号": s.id, "姓名": s.name, "得分": s.score }));
+        const today = new Date().toLocaleDateString();
+        const data = db[currentClass].students.map(s => ({
+            "学号": s.id,
+            "姓名": s.name,
+            "今日出勤": db[currentClass].attendance[today]?.includes(s.id) ? "已到" : "缺勤",
+            "累计得分": s.score
+        }));
         const ws = XLSX.utils.json_to_sheet(data);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "成绩表");
-        XLSX.writeFile(wb, `${currentClass}_课堂成绩.xlsx`);
+        XLSX.utils.book_append_sheet(wb, ws, "成绩考勤表");
+        XLSX.writeFile(wb, `${currentClass}_${today}.xlsx`);
     }
 </script>
 </body>
