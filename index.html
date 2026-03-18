@@ -75,35 +75,55 @@
 </div>
 
 <script>
-    // 【修改点】请在此填入您在 Supabase 获取的凭证
+    // 1. 配置信息（请确保这两个值是正确的）
     const SUPABASE_URL = 'https://XXXXXXXXXXXX.supabase.co';
     const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
 
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // 2. 初始化客户端（修改变量名为 sb，避免与库名冲突）
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // 3. 全局变量
     let db = {};
     let currentUser = null;
     let currentClass = "";
     let currentSort = 'no';
     const CLASS_NAMES = ["骨伤2班", "治疗1班", "社体1班", "体能1班", "体教8班", "民传1班", "运训2班"];
 
-    // 登录
+    // 4. 登录函数
     async function handleLogin() {
         const email = document.getElementById('email').value;
         const password = document.getElementById('password').value;
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) alert("登录失败: " + error.message);
-        else { currentUser = data.user; initApp(); }
+        
+        // 增加一点控制台反馈，方便调试
+        console.log("尝试登录中...");
+        
+        // 注意这里改为 sb.auth
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+        
+        if (error) {
+            alert("登录失败: " + error.message);
+        } else { 
+            currentUser = data.user; 
+            console.log("登录成功！用户ID:", currentUser.id);
+            initApp(); 
+        }
     }
 
-    async function handleLogout() { await supabase.auth.signOut(); location.reload(); }
+    async function handleLogout() { 
+        await sb.auth.signOut(); 
+        location.reload(); 
+    }
 
     async function initApp() {
         document.getElementById('view-login').classList.add('hidden');
         document.getElementById('view-app').classList.remove('hidden');
         
-        const { data, error } = await supabase.from('classroom_data').select('data').eq('id', currentUser.id).single();
-        if (data) db = data.data;
-        else {
+        // 注意这里改为 sb.from
+        const { data, error } = await sb.from('classroom_data').select('data').eq('id', currentUser.id).single();
+        
+        if (data) { 
+            db = data.data; 
+        } else {
             CLASS_NAMES.forEach(n => db[n] = { students: [], attendance: {}, attDates: [] });
             await saveToCloud();
         }
@@ -111,16 +131,26 @@
     }
 
     async function saveToCloud() {
-        document.getElementById('sync-status').innerHTML = '<i class="fas fa-spinner fa-spin"></i> 同步中...';
-        const { error } = await supabase.from('classroom_data').upsert({ id: currentUser.id, data: db, updated_at: new Date() });
-        if (!error) document.getElementById('sync-status').innerHTML = '<i class="fas fa-check"></i> 云端已同步';
+        const statusTag = document.getElementById('sync-status');
+        if(statusTag) statusTag.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 同步中...';
+        
+        // 注意这里改为 sb.from
+        const { error } = await sb.from('classroom_data').upsert({ id: currentUser.id, data: db, updated_at: new Date() });
+        
+        if (!error && statusTag) {
+            statusTag.innerHTML = '<i class="fas fa-check"></i> 云端已同步';
+        } else if (error) {
+            console.error("同步失败:", error);
+        }
     }
 
     const router = {
         stack: [],
         go(viewId) {
             document.querySelectorAll('.sub-view').forEach(v => v.classList.add('hidden'));
-            document.getElementById(viewId).classList.remove('hidden');
+            const target = document.getElementById(viewId);
+            if(target) target.classList.remove('hidden');
+            
             document.getElementById('btnBack').classList.toggle('hidden', viewId === 'view-home');
             this.stack.push(viewId);
             if (viewId === 'view-home') renderHome();
@@ -135,11 +165,12 @@
             <div class="card" style="cursor:pointer; text-align:center" onclick="currentClass='${name}'; router.go('view-scores')">
                 <i class="fas fa-users" style="font-size:2rem; color:var(--primary)"></i>
                 <h3>${name}</h3>
-                <p>${db[name]?.students.length || 0} 人</p>
+                <p>${db[name]?.students?.length || 0} 人</p>
             </div>`).join('');
     }
 
     function renderScores() {
+        if (!db[currentClass]) return;
         let students = [...db[currentClass].students];
         if(currentSort === 'score') students.sort((a,b) => b.score - a.score);
         else students.sort((a,b) => a.no - b.no);
@@ -162,9 +193,11 @@
 
     function changeScore(sid, delta) {
         const s = db[currentClass].students.find(x => x.id === sid);
-        s.score = Math.max(0, s.score + delta);
-        renderScores();
-        saveToCloud();
+        if (s) {
+            s.score = Math.max(0, s.score + delta);
+            renderScores();
+            saveToCloud();
+        }
     }
 
     function setSort(type) {
@@ -181,7 +214,6 @@
         XLSX.utils.book_append_sheet(wb, ws, "成绩单");
         XLSX.writeFile(wb, `${currentClass}_成绩_${new Date().toLocaleDateString()}.xlsx`);
     }
-
 </script>
 </body>
 </html>
