@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>智慧课堂云端助手 Pro</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* 核心样式 */
+        :root { --primary: #8da4b4; --secondary: #a7ad9b; --bg: #f5f7f9; --text: #4a4e51; --white: #ffffff; --color-absent: #fa5252; --color-present: #82c91e; }
+        body { background: var(--bg); color: var(--text); font-family: "PingFang SC", sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .hidden { display: none !important; }
+        .card { background: var(--white); border-radius: 12px; padding: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); border: 1px solid #eee; position: relative; }
+        .grid-6 { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+        .btn { padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; transition: 0.2s; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-outline { border: 1.5px solid var(--primary); color: var(--primary); background: transparent; }
+        .btn-outline.active { background: var(--primary); color: white; }
+        
+        /* 登录框 */
+        #view-login { height: 80vh; display: flex; align-items: center; justify-content: center; }
+        .login-box { background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 350px; text-align: center; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+        
+        /* 统计栏 */
+        .stats-bar { background: white; padding: 15px 25px; border-radius: 12px; display: flex; gap: 30px; margin-bottom: 20px; align-items: center; }
+        .sync-tag { font-size: 0.8rem; color: #2ecc71; margin-left: 10px; }
+        .avatar { width: 45px; height: 45px; border-radius: 50%; margin: 0 auto 10px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <section id="view-login">
+        <div class="login-box">
+            <i class="fas fa-cloud-sun" style="font-size: 3rem; color: var(--primary); margin-bottom: 20px;"></i>
+            <h2>教师登录</h2>
+            <input type="email" id="email" placeholder="Email">
+            <input type="password" id="password" placeholder="Password">
+            <button class="btn btn-primary" style="width:100%" onclick="handleLogin()">登录云端</button>
+        </div>
+    </section>
+
+    <section id="view-app" class="hidden">
+        <header style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #ddd; padding-bottom:15px; margin-bottom:20px;">
+            <div>
+                <h2 id="topTitle" style="margin:0;">智慧课堂助手</h2>
+                <span id="sync-status" class="sync-tag"><i class="fas fa-check"></i> 云端已同步</span>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <button id="btnBack" class="btn hidden" onclick="router.back()"><i class="fas fa-arrow-left"></i> 返回</button>
+                <button class="btn" style="background:#eee" onclick="handleLogout()">登出</button>
+            </div>
+        </header>
+
+        <div id="view-home" class="sub-view hidden">
+            <div class="grid-6" id="homeClassGrid"></div>
+        </div>
+
+        <div id="view-scores" class="sub-view hidden">
+            <div class="stats-bar flex-between">
+                <div>均分: <span id="score-avg" style="font-weight:bold">0</span></div>
+                <div style="display:flex; gap:10px;">
+                    <button id="sortNoBtn" class="btn btn-outline active" onclick="setSort('no')">按序号</button>
+                    <button id="sortScoreBtn" class="btn btn-outline" onclick="setSort('score')">按分数</button>
+                    <button class="btn btn-primary" onclick="exportScoresXLSX()"><i class="fas fa-file-excel"></i> 导出成绩</button>
+                </div>
+            </div>
+            <div id="scoreGrid" class="grid-6"></div>
+        </div>
+        
+        </section>
+</div>
+
+<script>
+    // 【修改点】请在此填入您在 Supabase 获取的凭证
+    const SUPABASE_URL = 'https://XXXXXXXXXXXX.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    let db = {};
+    let currentUser = null;
+    let currentClass = "";
+    let currentSort = 'no';
+    const CLASS_NAMES = ["骨伤2班", "治疗1班", "社体1班", "体能1班", "体教8班", "民传1班", "运训2班"];
+
+    // 登录
+    async function handleLogin() {
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) alert("登录失败: " + error.message);
+        else { currentUser = data.user; initApp(); }
+    }
+
+    async function handleLogout() { await supabase.auth.signOut(); location.reload(); }
+
+    async function initApp() {
+        document.getElementById('view-login').classList.add('hidden');
+        document.getElementById('view-app').classList.remove('hidden');
+        
+        const { data, error } = await supabase.from('classroom_data').select('data').eq('id', currentUser.id).single();
+        if (data) db = data.data;
+        else {
+            CLASS_NAMES.forEach(n => db[n] = { students: [], attendance: {}, attDates: [] });
+            await saveToCloud();
+        }
+        router.go('view-home');
+    }
+
+    async function saveToCloud() {
+        document.getElementById('sync-status').innerHTML = '<i class="fas fa-spinner fa-spin"></i> 同步中...';
+        const { error } = await supabase.from('classroom_data').upsert({ id: currentUser.id, data: db, updated_at: new Date() });
+        if (!error) document.getElementById('sync-status').innerHTML = '<i class="fas fa-check"></i> 云端已同步';
+    }
+
+    const router = {
+        stack: [],
+        go(viewId) {
+            document.querySelectorAll('.sub-view').forEach(v => v.classList.add('hidden'));
+            document.getElementById(viewId).classList.remove('hidden');
+            document.getElementById('btnBack').classList.toggle('hidden', viewId === 'view-home');
+            this.stack.push(viewId);
+            if (viewId === 'view-home') renderHome();
+            if (viewId === 'view-scores') renderScores();
+        },
+        back() { this.stack.pop(); this.go(this.stack.pop()); }
+    };
+
+    function renderHome() {
+        const grid = document.getElementById('homeClassGrid');
+        grid.innerHTML = CLASS_NAMES.map(name => `
+            <div class="card" style="cursor:pointer; text-align:center" onclick="currentClass='${name}'; router.go('view-scores')">
+                <i class="fas fa-users" style="font-size:2rem; color:var(--primary)"></i>
+                <h3>${name}</h3>
+                <p>${db[name]?.students.length || 0} 人</p>
+            </div>`).join('');
+    }
+
+    function renderScores() {
+        let students = [...db[currentClass].students];
+        if(currentSort === 'score') students.sort((a,b) => b.score - a.score);
+        else students.sort((a,b) => a.no - b.no);
+
+        document.getElementById('scoreGrid').innerHTML = students.map(s => `
+            <div class="card">
+                <div class="stu-no">#${s.no}</div>
+                <div class="avatar" style="background:hsl(${(s.no*137)%360},45%,65%)">${s.name[0]}</div>
+                <div class="stu-name"><b>${s.name}</b></div>
+                <div style="font-size:1.5rem; margin:10px 0; font-weight:bold; color:var(--primary)">${s.score}</div>
+                <div style="display:flex; justify-content:center; gap:10px">
+                    <button class="btn" style="background:var(--color-absent); color:white; padding:5px 12px" onclick="changeScore('${s.id}',-1)">-</button>
+                    <button class="btn" style="background:var(--color-present); color:white; padding:5px 12px" onclick="changeScore('${s.id}',1)">+</button>
+                </div>
+            </div>`).join('');
+        
+        const avg = students.length ? (students.reduce((a,b)=>a+b.score,0)/students.length).toFixed(1) : 0;
+        document.getElementById('score-avg').innerText = avg;
+    }
+
+    function changeScore(sid, delta) {
+        const s = db[currentClass].students.find(x => x.id === sid);
+        s.score = Math.max(0, s.score + delta);
+        renderScores();
+        saveToCloud();
+    }
+
+    function setSort(type) {
+        currentSort = type;
+        document.getElementById('sortNoBtn').classList.toggle('active', type === 'no');
+        document.getElementById('sortScoreBtn').classList.toggle('active', type === 'score');
+        renderScores();
+    }
+
+    function exportScoresXLSX() {
+        const data = db[currentClass].students.map(s => ({ "序号": s.no, "学号": s.id, "姓名": s.name, "得分": s.score }));
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "成绩单");
+        XLSX.writeFile(wb, `${currentClass}_成绩_${new Date().toLocaleDateString()}.xlsx`);
+    }
+
+</script>
+</body>
+</html>
